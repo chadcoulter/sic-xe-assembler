@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redsigma-sicxe"
+version = "0.1.0"
+description = "SIC/XE assembler, simulator, and SVL-to-SIC/XE compiler"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+    "redsigma-svl @ git+https://github.com/chadcoulter/svl.git@a208b527d158a4f377ec59b4dbcb9de93cc8f80b",
+]
+
+[tool.setuptools]
+py-modules = ["sic_xe_assembler_sim", "svl_to_sic"]
+
+[project.scripts]
+sicxe-assemble = "sic_xe_assembler_sim:main"
+svl-to-sicxe = "svl_to_sic:main"
