@@ -4,6 +4,8 @@ A compiler pipeline that takes **SVL** (Spike Verification Language) source code
 compiles it to **SIC/XE** assembly, assembles it into **tamper-evident H/T/E object
 code** stamped with 231-gate checksums, and executes it in a verified simulator.
 
+SVL language: <https://github.com/sudo-ai-git/svl>
+
 ```
 SVL source → lex/parse → SIC/XE assembly → 231-gate stamped object code → verified simulator
 ```
