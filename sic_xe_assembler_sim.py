@@ -39,6 +39,7 @@ OPTAB = {
     "+ADD":  ("18", 4), "+SUB":  ("1C", 4), "+MUL":  ("20", 4), "+DIV":  ("24", 4),
     "+COMP":  ("28", 4), "+J":  ("3C", 4), "+JSUB":  ("4B", 4), "+RSUB":  ("4F", 4),
     "+AND":  ("40", 4), "+OR":  ("44", 4),
+    "HALT":  ("FF", 1),  # halt instruction - simulator stops on this opcode
 }
 
 # Registers: A, X, L, B, S, T, F, PC, SW
@@ -67,6 +68,7 @@ class Assembler:
         self.lit_pool = []                  # list of literal values
         self.locctr = 0
         self.start_address = 0
+        self.entry_symbol = None   # entry point symbol from END directive
         self.program_name = ""
         self.program_length = 0
         self.object_code = []               # list of (address, object_code_hex, is_format4)
@@ -106,6 +108,7 @@ class Assembler:
             # END directive
             if opcode.upper() == "END":
                 self.program_length = self.locctr - self.start_address
+                self.entry_symbol = operand.strip() if operand else None
                 self.line_info.append((line_num, self.locctr, label, opcode, operand, ""))
                 break
 
@@ -227,6 +230,12 @@ class Assembler:
             if op == "RSUB":
                 # RSUB: no operand, format 3, opcode only
                 obj_code = f"{OPTAB['RSUB'][0]}0000"
+                self.object_code.append((locctr, obj_code, False))
+                continue
+
+            if not format4 and op in OPTAB and OPTAB[op][1] == 1:
+                # Format 1: single-byte opcode, no operand (e.g. HALT)
+                obj_code = f"{OPTAB[op][0]}00"
                 self.object_code.append((locctr, obj_code, False))
                 continue
 
@@ -377,8 +386,11 @@ class Assembler:
                     f":G:{s}:{l}:{r}"
                 )
 
-        # E record: E^start_address
-        e_record = f"E^{self.start_address:06X}"
+        # E record: use entry symbol address if available, else start_address
+        entry_addr = self.start_address
+        if self.entry_symbol and self.entry_symbol in self.symtab:
+            entry_addr = self.symtab[self.entry_symbol].address
+        e_record = f"E^{entry_addr:06X}"
 
         return {"H": h_record, "T": t_records, "E": e_record,
                 "start": self.start_address, "length": self.program_length}
@@ -469,8 +481,9 @@ class Simulator:
             raise ValueError(f"Malformed E record: {e_rec}")
         entry = int(m.group(1), 16)
 
-        self.regs["PC"] = start_address
-        self.pc = start_address
+        # Use E record entry point as initial PC (not H record start address)
+        self.regs["PC"] = entry
+        self.pc = entry
         return start_address
 
     def _read_word(self, addr):
@@ -547,9 +560,44 @@ class Simulator:
 
     def _execute(self, byte1, opcode6, fmt, ni, x, b, p, e, disp, new_pc):
         """Execute an instruction. Returns (next_pc, trace_line, should_stop)."""
+        # Halt on PC == 0 (JSUB 0 transfers here)
+        if self.pc == 0:
+            trace_line = f"  PC={self.pc:06X} HALT"
+            return self.pc, trace_line, True
+
+        # HALT instruction (opcode 0xFF)
+        if byte1 == 0xFF:
+            trace_line = f"  PC={self.pc:06X} HALT"
+            return self.pc, trace_line, True
+
         # Map opcode to mnemonic for trace
         mnemonic = self._opcode_to_mnemonic(opcode6, fmt, byte1)
         trace_line = f"  PC={self.pc:06X} {mnemonic:<8} "
+
+        # --- Simulator built-ins -------------------------------------------------
+        # print_int at 0xFF00 (65280): print value in A register, return via L
+        if self.pc == 65280:
+            output = self.regs["A"]
+            trace_line += f"PRINT_INT: A = {output}"
+            self.regs["PC"] = self.regs["L"]
+            self.pc = self.regs["L"]
+            return self.regs["L"], trace_line, False
+
+        # print at 0xFF03 (65283): print null-terminated string at address in A
+        if self.pc == 65283:
+            addr = self.regs["A"]
+            chars = []
+            while True:
+                b = self.memory[addr]
+                if b == 0:
+                    break
+                chars.append(chr(b))
+                addr += 1
+            output = "".join(chars)
+            trace_line += f"PRINT: {output!r}"
+            self.regs["PC"] = self.regs["L"]
+            self.pc = self.regs["L"]
+            return self.regs["L"], trace_line, False
 
         # Special-case JSUB and RSUB using the full byte1 value,
         # since JSUB (0x4B) and JGE (0x48) share the same top 6 bits.
@@ -569,6 +617,10 @@ class Simulator:
             trace_line += f"RSUB: PC <- L = {self.regs['L']:06X}"
             self.regs["PC"] = self.regs["L"]
             self.pc = self.regs["L"]
+            # Halt if returning to address 0 (no return address set)
+            if self.regs["L"] == 0:
+                trace_line += " [HALT]"
+                return self.regs["L"], trace_line, True
             return self.regs["L"], trace_line, False
 
         # For other instructions, just compute TA and read value for trace
